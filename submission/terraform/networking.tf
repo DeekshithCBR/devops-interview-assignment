@@ -87,7 +87,7 @@ resource "aws_eip" "nat" {
 
 resource "aws_nat_gateway" "main" {
   allocation_id = aws_eip.nat.id
-  subnet_id     = aws_subnet.private_a.id  # BUG: should be public subnet
+  subnet_id     = aws_subnet.public_a.id  # moved to public subnet
 
   tags = {
     Name = "${var.cluster_name}-nat"
@@ -126,13 +126,13 @@ resource "aws_route_table" "private" {
 
 resource "aws_route_table_association" "public_a" {
   subnet_id      = aws_subnet.public_a.id
-  route_table_id = aws_route_table.private.id  # BUG: should be public route table
+  route_table_id = aws_route_table.public.id
 }
 
 resource "aws_route_table_association" "public_b" {
   subnet_id      = aws_subnet.public_b.id
-  route_table_id = aws_route_table.private.id  # BUG: should be public route table
-}
+  route_table_id = aws_route_table.public.id
+} 
 
 resource "aws_route_table_association" "private_a" {
   subnet_id      = aws_subnet.private_a.id
@@ -153,11 +153,11 @@ resource "aws_security_group" "bastion" {
   vpc_id      = aws_vpc.main.id
 
   ingress {
-    description = "SSH access"
+    description = "SSH access from management network only"
     from_port   = 22
     to_port     = 22
     protocol    = "tcp"
-    cidr_blocks = ["0.0.0.0/0"]  # BUG: should be restricted to management CIDR
+    cidr_blocks = [var.management_cidr]
   }
 
   egress {
