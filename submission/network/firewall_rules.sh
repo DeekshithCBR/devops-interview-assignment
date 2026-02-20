@@ -23,33 +23,57 @@
 set -euo pipefail
 
 # --- Flush existing rules ---
-# TODO
+iptables -F
+iptables -X
+iptables -t nat -F
+iptables -t nat -X
+iptables -t mangle -F
+iptables -t mangle -X
 
 # --- Default policies ---
-# TODO
+iptables -P INPUT DROP
+iptables -P FORWARD DROP
+iptables -P OUTPUT ACCEPT
 
 # --- Loopback ---
-# TODO
+iptables -A INPUT -i lo -j ACCEPT
+iptables -A OUTPUT -o lo -j ACCEPT
 
 # --- Established/Related ---
-# TODO
+iptables -A INPUT -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
+
+# network subnets from plan
+CAMERA_VLAN="10.50.2.0/24"
+MGMT_VLAN="10.50.1.0/24"
 
 # --- SSH from management VLAN only ---
-# TODO
+iptables -A INPUT -i eno1 -p tcp --dport 22 -s ${MGMT_VLAN} -m conntrack --ctstate NEW -j ACCEPT
 
 # --- RTSP from camera VLAN only ---
-# TODO
+iptables -A INPUT -i eno2 -p tcp --dport 554 -s ${CAMERA_VLAN} -j ACCEPT
+iptables -A INPUT -i eno2 -p udp --dport 554 -s ${CAMERA_VLAN} -j ACCEPT
 
 # --- HTTPS outbound ---
-# TODO
+iptables -A OUTPUT -p tcp --dport 443 -m conntrack --ctstate NEW,ESTABLISHED -j ACCEPT
 
 # --- Camera VLAN isolation (block camera-to-management/corporate) ---
-# TODO
+iptables -A FORWARD -s ${CAMERA_VLAN} -d ${MGMT_VLAN} -j DROP
+iptables -A FORWARD -s ${CAMERA_VLAN} -d 10.50.3.0/24 -j DROP
 
 # --- ICMP ---
-# TODO
+iptables -A INPUT -p icmp -j ACCEPT
+iptables -A FORWARD -p icmp -j ACCEPT
+iptables -A OUTPUT -p icmp -j ACCEPT
 
 # --- Logging for dropped packets (optional but recommended) ---
-# TODO
+iptables -N LOGDROP
+iptables -A LOGDROP -m limit --limit 2/min -j LOG --log-prefix "IPTables-Dropped: " --log-level 4
+iptables -A LOGDROP -j DROP
+
+# send remaining INPUT/ FORWARD to logdrop
+iptables -A INPUT -j LOGDROP
+iptables -A FORWARD -j LOGDROP
+
+echo "Firewall rules applied successfully"
 
 echo "Firewall rules applied successfully"

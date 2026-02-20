@@ -1,15 +1,128 @@
-# pipeline.yaml — CI/CD Pipeline Definition
-#
-# TASK: Define a CI/CD pipeline for the video-analytics application.
-# Use GitHub Actions syntax (or clearly comment which CI system you're targeting).
-#
-# Requirements:
-#   - Build stage: compile, run unit tests
-#   - Test stage: integration tests, security scanning
-#   - Deploy to staging: push to ECR, deploy to EKS staging
-#   - Deploy to production: manual approval gate, deploy to EKS prod
-#   - Rollback mechanism on failure
-#   - Notifications on failure
-#
-# The application is a Java service built with Gradle, containerized,
-# deployed to EKS via kubectl/helm.
+# This file defines a GitHub Actions workflow
+name: CI/CD Pipeline
+
+on:
+  push:
+    branches: ["main", "develop-Deekshith"]
+  pull_request:
+    branches: ["main"]
+
+env:
+  AWS_REGION: us-east-1
+  ECR_REGISTRY: 123456789012.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com
+  IMAGE_NAME: video-processor
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+      - name: Set up JDK
+        uses: actions/setup-java@v3
+        with:
+          java-version: '17'
+          distribution: 'temurin'
+      - name: Build and unit test
+        run: |
+          ./gradlew clean build
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v3
+        with:
+          name: build
+          path: build/libs/*.jar
+
+  integration-tests:
+    runs-on: ubuntu-latest
+    needs: build
+    steps:
+      - uses: actions/checkout@v3
+      - name: Download artifact
+        uses: actions/download-artifact@v3
+        with:
+          name: build
+      - name: Run integration tests
+        run: |
+          ./gradlew integrationTest
+      - name: Security scan
+        run: |
+          ./gradlew dependencyCheckAnalyze
+
+  push-to-ecr:
+    runs-on: ubuntu-latest
+    needs: integration-tests
+    steps:
+      - uses: actions/checkout@v3
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v2
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_FOR_CICD }}
+          aws-region: ${{ env.AWS_REGION }}
+      - name: Login to ECR
+        run: |
+          aws ecr get-login-password | docker login --username AWS --password-stdin ${{ env.ECR_REGISTRY }}
+      - name: Build Docker image
+        run: |
+          docker build -t ${{ env.IMAGE_NAME }}:${{ github.sha }} .
+          docker tag ${{ env.IMAGE_NAME }}:${{ github.sha }} ${{ env.ECR_REGISTRY }}/${{ env.IMAGE_NAME }}:${{ github.sha }}
+      - name: Push image
+        run: |
+          docker push ${{ env.ECR_REGISTRY }}/${{ env.IMAGE_NAME }}:${{ github.sha }}
+
+  deploy-staging:
+    runs-on: ubuntu-latest
+    needs: push-to-ecr
+    steps:
+      - uses: actions/checkout@v3
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v2
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_FOR_CICD }}
+          aws-region: ${{ env.AWS_REGION }}
+      - name: Update kubeconfig (staging)
+        run: |
+          aws eks update-kubeconfig --name staging-cluster --region ${{ env.AWS_REGION }}
+      - name: Deploy to staging
+        run: |
+          kubectl set image deployment/video-processor video-processor=$ {{ env.ECR_REGISTRY }}/${{ env.IMAGE_NAME }}:${{ github.sha }} -n video-analytics
+
+  wait-for-approval:
+    needs: deploy-staging
+    runs-on: ubuntu-latest
+    steps:
+      - name: Wait for manual approval
+        uses: peter-evans/wait-for-commit-status@v2
+        with:
+          commit: ${{ github.sha }}
+          status: approval
+
+  deploy-prod:
+    runs-on: ubuntu-latest
+    needs: wait-for-approval
+    steps:
+      - uses: actions/checkout@v3
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v2
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_FOR_CICD }}
+          aws-region: ${{ env.AWS_REGION }}
+      - name: Update kubeconfig (production)
+        run: |
+          aws eks update-kubeconfig --name prod-cluster --region ${{ env.AWS_REGION }}
+      - name: Deploy to production
+        run: |
+          helm upgrade --install video-processor chart/ --set image.tag=${{ github.sha }}
+
+  rollback:
+    if: failure()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Notify Slack
+        uses: 8398a7/action-slack@v3
+        with:
+          status: ${{ job.status }}
+          fields: repo,commit,author
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+
+notifications:
+  on-failure: slack
